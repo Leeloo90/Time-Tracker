@@ -2,7 +2,7 @@
 //  TimeEntry.swift
 //  AutoTime
 //
-//  Core data model for time tracking entries
+//  Core data model for time tracking entries with timeline helpers
 //
 
 import Foundation
@@ -17,6 +17,8 @@ struct TimeEntry: Identifiable, Codable, Equatable {
     var timeStart: Date
     var timeFinish: Date
     var overview: String
+
+    // MARK: - Calculated Properties
 
     var durationInHours: Double {
         timeFinish.timeIntervalSince(timeStart) / 3600.0
@@ -40,6 +42,25 @@ struct TimeEntry: Identifiable, Codable, Equatable {
         return formatter.string(from: timeFinish)
     }
 
+    // MARK: - Timeline Positioning Helpers
+
+    /// Calculates the start position of the entry as a percentage (0.0 to 1.0) of a 24-hour day.
+    /// Useful for placing the block on a visual timeline bar.
+    var startPercentageOfDay: CGFloat {
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: timeStart)
+        let secondsFromStart = timeStart.timeIntervalSince(startOfDay)
+        return CGFloat(secondsFromStart / 86400.0) // 86400 seconds in a day
+    }
+
+    /// Calculates the width of the entry as a percentage (0.0 to 1.0) of a 24-hour day.
+    var widthPercentageOfDay: CGFloat {
+        let duration = timeFinish.timeIntervalSince(timeStart)
+        return CGFloat(duration / 86400.0)
+    }
+
+    // MARK: - Initialization
+
     init(id: UUID = UUID(),
          day: String = "",
          company: String = "",
@@ -56,13 +77,8 @@ struct TimeEntry: Identifiable, Codable, Equatable {
         self.application = application
         self.project = project
         self.timeStart = timeStart
-        self.timeFinish = timeFinish
-        self.overview = overview
-    }
-}
-
-enum Allocation: String, CaseIterable {
-    case production = "Production"
-    case editing = "Editing"
-    case unassigned = "Unassigned"
-}
+                 self.timeFinish = timeFinish
+                self.overview = overview
+            }
+        }
+        

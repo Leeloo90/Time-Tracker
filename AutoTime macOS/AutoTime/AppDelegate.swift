@@ -2,7 +2,7 @@
 //  AppDelegate.swift
 //  AutoTime
 //
-//  Handles menu bar integration and app lifecycle
+//  Handles menu bar integration, app lifecycle, and permission synchronization.
 //
 
 import Cocoa
@@ -21,6 +21,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var settingsWindow: NSWindow?
 
     var isIdle: Bool = false
+    // Cache last icon state to avoid unnecessary layout updates
+    private var lastIconState: String? = nil
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Initialize trackers
@@ -31,14 +33,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Setup menu bar item
         setupMenuBar()
 
-        // Set initial icon color (white - not tracking)
+        // Set initial icon color (white/default - not tracking)
         updateMenuBarIcon()
 
-        // Check for Accessibility permissions
+        // Check for Accessibility permissions on launch
         checkAccessibilityPermissions()
 
-        // Setup monitors - CRITICAL: This connects app detection to tracking
-        setupMonitors()
+        // Setup monitors with a small delay to ensure the UI is ready before data starts flowing
+        // and to avoid layout recursion errors during app startup
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.setupMonitors()
+        }
+        
         print("🚀 AutoTime started - monitors active")
     }
 
@@ -47,12 +53,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let button = statusItem?.button {
             button.image = NSImage(systemSymbolName: "clock.fill", accessibilityDescription: "AutoTime")
-            // No need to set action/target when using menu directly
         }
 
-        // Create menu
         let menu = NSMenu()
 
+        // 1. Live Status Header
         let statusItem = NSMenuItem(
             title: activityTracker.isTracking ? "Tracking Active" : "Idle",
             action: nil,
@@ -63,6 +68,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // 2. Control Actions
         let startStopItem = NSMenuItem(
             title: activityTracker.isTracking ? "Stop Workday" : "Start Workday",
             action: #selector(toggleTracking),
@@ -89,6 +95,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // 3. Quit Action
         let quitItem = NSMenuItem(
             title: "Quit AutoTime",
             action: #selector(quit),
@@ -101,47 +108,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setupMonitors() {
-        // Setup app change callback - only process if tracking is active
+        // App Switch Callback - connects app detection to tracking logic
         appMonitor.onAppChange = { [weak self] app, windowTitle in
             guard let self = self, self.activityTracker.isTracking else { return }
-            print("🔔 App switch detected: \(app)")
             self.activityTracker.handleAppSwitch(app: app, windowTitle: windowTitle)
         }
 
-        // Start app monitoring
         appMonitor.startMonitoring()
 
-        // Idle monitoring
+        // User Input / Idle Reset
         idleMonitor.onUserInput = { [weak self] in
             guard let self = self else { return }
             self.activityTracker.recordUserInput()
 
-            // If we were idle and now have input, update icon
             if self.isIdle {
                 self.isIdle = false
                 self.updateMenuBarIcon()
+                self.updateMenuBar()
             }
         }
         idleMonitor.startMonitoring()
 
-        // Start a timer to check for idle state periodically
-        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        // Periodic Idle Checker (Frequency based on settings)
+        Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.checkIdleState()
         }
     }
 
     func checkAccessibilityPermissions() {
-        let trusted = AXIsProcessTrusted()
-        if !trusted {
+        if !AXIsProcessTrusted() {
             let alert = NSAlert()
             alert.messageText = "Accessibility Permissions Required"
-            alert.informativeText = "AutoTime needs Accessibility permissions to detect active applications and window titles. Please grant permission in System Settings > Privacy & Security > Accessibility."
+            alert.informativeText = "AutoTime needs Accessibility permissions to capture window titles for your timeline. Please grant permission in System Settings."
             alert.alertStyle = .warning
             alert.addButton(withTitle: "Open System Settings")
             alert.addButton(withTitle: "Later")
 
             if alert.runModal() == .alertFirstButtonReturn {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+                NSWorkspace.shared.open(url)
             }
         }
     }
@@ -169,8 +174,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         startupWindow?.title = "Start Workday"
         startupWindow?.styleMask = [.titled, .closable]
         startupWindow?.center()
-        startupWindow?.makeKeyAndOrderFront(nil)
         startupWindow?.level = .floating
+
+        // Defer showing the window to avoid layout recursion during state changes
+        DispatchQueue.main.async { [weak self] in
+            self?.startupWindow?.makeKeyAndOrderFront(nil)
+        }
     }
 
     @objc func showDashboard() {
@@ -181,10 +190,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             dashboardWindow = NSWindow(contentViewController: hostingController)
             dashboardWindow?.title = "AutoTime Dashboard"
             dashboardWindow?.styleMask = [.titled, .closable, .resizable, .miniaturizable]
-            dashboardWindow?.setContentSize(NSSize(width: 1200, height: 600))
+            dashboardWindow?.setContentSize(NSSize(width: 1200, height: 700))
             dashboardWindow?.center()
+            dashboardWindow?.level = .floating // Keep window on top
         }
-
         dashboardWindow?.makeKeyAndOrderFront(nil)
     }
 
@@ -195,11 +204,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             settingsWindow = NSWindow(contentViewController: hostingController)
             settingsWindow?.title = "AutoTime Settings"
-            settingsWindow?.styleMask = [.titled, .closable, .miniaturizable]
-            settingsWindow?.setContentSize(NSSize(width: 600, height: 700))
+            settingsWindow?.styleMask = [.titled, .closable]
+            settingsWindow?.setContentSize(NSSize(width: 600, height: 600))
             settingsWindow?.center()
+            settingsWindow?.level = .floating // Keep window on top
         }
-
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
@@ -218,38 +227,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func updateMenuBarIcon() {
-        guard let button = statusItem?.button else { return }
+        guard let _ = statusItem?.button else { return }
 
-        let iconColor: NSColor
+        // Compute a simple state string and early-return if nothing changed
+        let state: String
         if !activityTracker.isTracking {
-            // Not tracking - white/default (system color)
-            iconColor = .labelColor
+            state = "label"
         } else if isIdle {
-            // Tracking but idle - orange
-            iconColor = .orange
+            state = "idle"
         } else {
-            // Tracking and active - green
-            iconColor = .systemGreen
+            state = "active"
         }
 
-        // Create SF Symbol with color
-        let config = NSImage.SymbolConfiguration(pointSize: 0, weight: .regular)
+        if state == lastIconState { return }
+        lastIconState = state
+
+        let iconColor: NSColor
+        switch state {
+        case "label": iconColor = .labelColor
+        case "idle": iconColor = .systemOrange
+        default: iconColor = .systemGreen
+        }
+
+        let config = NSImage.SymbolConfiguration(pointSize: 0, weight: .bold)
             .applying(.init(hierarchicalColor: iconColor))
 
-        if let image = NSImage(systemSymbolName: "clock.fill", accessibilityDescription: "AutoTime") {
-            let coloredImage = image.withSymbolConfiguration(config)
-            button.image = coloredImage
+        // Update the status item on the next runloop cycle to avoid layout recursion
+        DispatchQueue.main.async { [weak self] in
+            guard let button = self?.statusItem?.button else { return }
+            if let image = NSImage(systemSymbolName: "clock.fill", accessibilityDescription: "AutoTime") {
+                button.image = image.withSymbolConfiguration(config)
+            }
         }
     }
 
     func checkIdleState() {
-        guard activityTracker.isTracking else {
-            if isIdle {
-                isIdle = false
-                updateMenuBarIcon()
-            }
-            return
-        }
+        guard activityTracker.isTracking else { return }
 
         let idleThreshold = AppSettings.shared.idleThresholdSeconds
         let timeSinceLastInput = Date().timeIntervalSince(activityTracker.lastInputTime)
@@ -268,7 +281,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        appMonitor.stopMonitoring()
-        idleMonitor.stopMonitoring()
+        appMonitor?.stopMonitoring()
+        idleMonitor?.stopMonitoring()
     }
 }

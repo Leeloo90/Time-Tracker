@@ -2,7 +2,7 @@
 //  ActivityTracker.swift
 //  AutoTime
 //
-//  Implements the core tracking logic with 5-minute sticky rule
+//  Core tracking logic updated for Timeline Visualizer and Advanced Filtering.
 //
 
 import Foundation
@@ -32,7 +32,7 @@ class ActivityTracker: ObservableObject {
 
     private var currentActivityState: ActivityState?
     private var pendingSwitchState: PendingSwitch?
-    var lastInputTime: Date = Date() // Public so AppDelegate can check idle state
+    var lastInputTime: Date = Date()
     private var blacklistedStartTime: Date?
 
     private var timer: Timer?
@@ -42,13 +42,35 @@ class ActivityTracker: ObservableObject {
         loadEntries()
     }
 
+    // MARK: - Filtering Helpers for Dashboard View
+
+    /// Returns entries filtered by a specific day and an optional time range within that day.
+    func getEntries(for date: Date, startSeconds: Double = 0, endSeconds: Double = 86400) -> [TimeEntry] {
+        let calendar = Calendar.current
+        return entries.filter { entry in
+            // 1. Match the Day
+            let isSameDay = calendar.isDate(entry.timeStart, inSameDayAs: date)
+            
+            // 2. Match the Seconds Range within that day
+            let startOfDay = calendar.startOfDay(for: date)
+            let entryStartSec = entry.timeStart.timeIntervalSince(startOfDay)
+            let entryFinishSec = entry.timeFinish.timeIntervalSince(startOfDay)
+            
+            let inRange = (entryStartSec >= startSeconds && entryStartSec <= endSeconds) ||
+                          (entryFinishSec >= startSeconds && entryFinishSec <= endSeconds)
+            
+            return isSameDay && inRange
+        }
+    }
+
+    // MARK: - Tracking Logic
+
     func startTracking(company: String, allocation: String) {
         currentCompany = company
         currentAllocation = allocation
         isTracking = true
         lastInputTime = Date()
 
-        // Start the logic timer (runs every second)
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.processLogic()
         }
@@ -59,7 +81,6 @@ class ActivityTracker: ObservableObject {
         timer?.invalidate()
         timer = nil
 
-        // Close current session
         if let current = currentActivityState {
             addEntry(from: current, endTime: Date())
         }
@@ -72,55 +93,36 @@ class ActivityTracker: ObservableObject {
     }
 
     func handleAppSwitch(app: String, windowTitle: String) {
+        guard isTracking else { return }
+        
         let now = Date()
         lastInputTime = now
 
         let project = WindowTitleParser.parseProject(app: app, title: windowTitle)
-        print("📱 App/Window change: \(app) | Project: \(project)")
 
-        // Handle blacklisted apps
-        if settings.isBlacklisted(app) {
-            print("🚫 Blacklisted app detected: \(app)")
-            if blacklistedStartTime == nil {
-                blacklistedStartTime = now
-            }
+        // 1. Handle Blacklisted Apps (Treat as Idle)
+        if ["Finder", "System Settings", "Music"].contains(app) {
+            if blacklistedStartTime == nil { blacklistedStartTime = now }
             return
         }
-
-        // Clear blacklist timer if we switched back to a tracked app
         blacklistedStartTime = nil
 
-        // First activity
+        // 2. Handle Initial Activity
         if currentActivityState == nil {
-            print("🆕 First activity started: \(app) - \(project)")
             currentActivityState = ActivityState(app: app, project: project, startTime: now, lastActive: now)
             currentActivity = currentActivityState
             return
         }
 
-        // Check if we're in the same app AND same project (e.g., same Chrome tab)
+        // 3. Handle returning to the active session (cancel pending)
         if app == currentActivityState?.app && project == currentActivityState?.project {
-            print("↩️ Same app and project, canceling any pending switch")
             pendingSwitchState = nil
             pendingSwitch = nil
             return
         }
 
-        // Check if we're in the same app but DIFFERENT project (e.g., different Chrome tab)
-        if app == currentActivityState?.app && project != currentActivityState?.project {
-            // This is a window/tab switch within the same app
-            // Treat it the same as an app switch - start pending
-            if pendingSwitchState?.app != app || pendingSwitchState?.project != project {
-                print("📑 Window/tab switch within \(app): \(currentActivityState?.project ?? "") → \(project)")
-                pendingSwitchState = PendingSwitch(app: app, project: project, switchTime: now)
-                pendingSwitch = pendingSwitchState
-            }
-            return
-        }
-
-        // Different app - start pending switch
+        // 4. Handle Switch (Different App OR Different Project/Tab in same app)
         if pendingSwitchState?.app != app || pendingSwitchState?.project != project {
-            print("⏳ Starting pending switch to: \(app) - \(project)")
             pendingSwitchState = PendingSwitch(app: app, project: project, switchTime: now)
             pendingSwitch = pendingSwitchState
         }
@@ -136,42 +138,26 @@ class ActivityTracker: ObservableObject {
         // 1. Idle Detection
         if now.timeIntervalSince(lastInputTime) > settings.idleThresholdSeconds {
             if let current = currentActivityState {
-                print("💤 Idle detected - closing session")
                 addEntry(from: current, endTime: lastInputTime)
-                currentActivityState = nil
-                pendingSwitchState = nil
-                currentActivity = nil
-                pendingSwitch = nil
+                clearActiveSession()
             }
             return
         }
 
-        // 2. Blacklist Logic
-        if let blacklistStart = blacklistedStartTime {
-            if now.timeIntervalSince(blacklistStart) > settings.idleThresholdSeconds {
-                print("🚫 Blacklisted app active for 5+ min - terminating session")
-                if let current = currentActivityState {
-                    addEntry(from: current, endTime: blacklistStart)
-                }
-                currentActivityState = nil
-                blacklistedStartTime = nil
-                currentActivity = nil
-            }
+        // 2. Blacklist Duration Logic
+        if let blacklistStart = blacklistedStartTime, now.timeIntervalSince(blacklistStart) > settings.idleThresholdSeconds {
+            if let current = currentActivityState { addEntry(from: current, endTime: blacklistStart) }
+            clearActiveSession()
+            blacklistedStartTime = nil
         }
 
-        // 3. Sticky Logic
+        // 3. Sticky Logic Implementation
         if let pending = pendingSwitchState {
-            let timeSpent = now.timeIntervalSince(pending.switchTime)
-
-            if timeSpent > settings.stickyThreshold {
-                print("✅ Sticky threshold exceeded - committing switch")
-
-                // Close current activity at the switch time
+            if now.timeIntervalSince(pending.switchTime) > settings.stickyThreshold {
                 if let current = currentActivityState {
                     addEntry(from: current, endTime: pending.switchTime)
                 }
 
-                // Start new activity from the switch time
                 currentActivityState = ActivityState(
                     app: pending.app,
                     project: pending.project,
@@ -179,21 +165,22 @@ class ActivityTracker: ObservableObject {
                     lastActive: now
                 )
                 pendingSwitchState = nil
-
                 currentActivity = currentActivityState
                 pendingSwitch = nil
             }
         }
     }
 
+    private func clearActiveSession() {
+        currentActivityState = nil
+        pendingSwitchState = nil
+        currentActivity = nil
+        pendingSwitch = nil
+    }
+
     private func addEntry(from activity: ActivityState, endTime: Date) {
         let duration = endTime.timeIntervalSince(activity.startTime)
-
-        // Skip tiny entries (< 10 seconds)
-        guard duration >= 10 else {
-            print("⏭ Skipping tiny entry (\(Int(duration))s) for \(activity.app)")
-            return
-        }
+        guard duration >= 10 else { return } // Ignore noise shorter than 10s
 
         let entry = TimeEntry(
             company: currentCompany.isEmpty ? "Pending" : currentCompany,
@@ -204,13 +191,11 @@ class ActivityTracker: ObservableObject {
             timeFinish: endTime
         )
 
-        print("💾 Adding entry: \(activity.app) - \(Int(duration))s")
         entries.insert(entry, at: 0)
         saveEntries()
-        print("✅ Entry saved! Total entries: \(entries.count)")
     }
 
-    // MARK: - Persistence
+    // MARK: - Persistence & Updates
 
     private func saveEntries() {
         if let encoded = try? JSONEncoder().encode(entries) {
