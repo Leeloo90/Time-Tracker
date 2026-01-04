@@ -11,7 +11,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({ isWorking, onToggleWork, onSho
   const [showMenu, setShowMenu] = useState(false);
 
   return (
-    <div className="h-7 bg-white/10 backdrop-blur-lg flex items-center px-4 justify-between text-[13px] text-white select-none border-b border-white/10">
+    <div className="h-7 bg-white/10 backdrop-blur-lg flex items-center px-4 justify-between text-[13px] text-white select-none border-b border-white/10 relative z-50">
       <div className="flex items-center gap-4">
         <div className="font-bold flex items-center gap-1 cursor-default">
           <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
@@ -33,8 +33,8 @@ export const MenuBar: React.FC<MenuBarProps> = ({ isWorking, onToggleWork, onSho
 
         {showMenu && (
           <>
-            <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)}></div>
-            <div className="absolute right-0 mt-1 w-56 bg-[#2d2d2d]/95 backdrop-blur-xl border border-white/10 rounded-lg shadow-2xl z-50 p-1 text-gray-200">
+            <div className="fixed inset-0 z-[60]" onClick={() => setShowMenu(false)}></div>
+            <div className="absolute right-0 mt-1 w-56 bg-[#2d2d2d]/95 backdrop-blur-xl border border-white/10 rounded-lg shadow-2xl z-[70] p-1 text-gray-200">
               <button 
                 onClick={() => { onToggleWork(); setShowMenu(false); }}
                 className="w-full text-left px-3 py-1.5 hover:bg-blue-600 rounded flex justify-between items-center group"
