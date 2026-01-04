@@ -1,0 +1,8 @@
+{
+  "name": "AutoTime macOS Simulator",
+  "description": "A high-fidelity React simulation of the AutoTime macOS Menu Bar application, featuring activity tracking logic, the 5-minute sticky rule, and an editable dashboard.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
